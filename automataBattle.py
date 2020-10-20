@@ -160,12 +160,15 @@ class Automata(object):
   def addState(self, state):
     self.states.append(state)
     
-  def generate(self, maxTokens):
+  def generate(self, maxTokens, inputGenerator=None):
     myOutputSymbol, myState, myProcess = self.process()
     inputSymbols = []
     outputSymbols = []
     for t in range(maxTokens):
-        inputSymbol = random.choice(self.symbols)
+        if inputGenerator is None:
+            inputSymbol = random.choice(self.symbols)
+        else:
+            inputSymbol = inputGenerator()
         (myOutputSymbol, myState) = myProcess(inputSymbol, myState)
         inputSymbols.append(inputSymbol)
         outputSymbols.append(myOutputSymbol)
