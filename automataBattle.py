@@ -3,7 +3,7 @@ import random
 import graphviz
 import numpy as np
 from numba import jit
-
+import networkx as nx
 
 
 class State(object):
@@ -95,6 +95,7 @@ def minimizeDFA(symbols, states, initialState):
       outputBoxI = exampleNode.connections[sym].eqGroup
       resStates[i].connect(sym, resStates[outputBoxI])
   return resStates, resStates[initialState.eqGroup]
+
 
 class Automata(object):
   '''
@@ -267,6 +268,16 @@ class Automata(object):
       theirScore /= loopSize
       return (myScore, theirScore, loopSize)
 
+    
+  def toNx(self):
+    graph = nx.MultiDiGraph()
+    for state in self.states:
+        graph.add_node(state.index, label=str(state.outputSymbol), isInitialState=(state == self.initialState))
+    for state in self.states:
+      for sym, stateConnectedTo in state.connections.items():
+        graph.add_edge(state.index, stateConnectedTo.index, label=str(sym))
+    return graph
+    
   def toDot(self):
     dot = graphviz.Digraph()
     for state in self.states:
