@@ -161,18 +161,19 @@ class Automata(object):
   def addState(self, state):
     self.states.append(state)
     
+  # generates maxTokens+1 tokens as output, since it produces one symbol in the initial state, and then one symbol per state entered after processing an input symbol, 
   def generate(self, maxTokens, inputGenerator=None):
     myOutputSymbol, myState, myProcess = self.process()
     inputSymbols = []
-    outputSymbols = []
+    outputSymbols = [myState.outputSymbol] # we initially emit the symbol of our output state
     for t in range(maxTokens):
         if inputGenerator is None:
             inputSymbol = random.choice(self.symbols)
         else:
-            inputSymbol = inputGenerator()
+            inputSymbol = inputGenerator(t)
         (myOutputSymbol, myState) = myProcess(inputSymbol, myState)
         inputSymbols.append(inputSymbol)
-        outputSymbols.append(myOutputSymbol)
+        outputSymbols.append(myState.outputSymbol) # we emit a symbol from the position we are now in, not the position we used to be in (which is myOutputSymbol)
     return inputSymbols, outputSymbols
     
   def generateFromSelf(self, maxTokens, bailOnLoop=True):
@@ -281,10 +282,11 @@ class Automata(object):
   def toDot(self):
     dot = graphviz.Digraph()
     for state in self.states:
+      doubleStr = "double" if (state.outputSymbol == "a") else ""
       if state == self.initialState:
-        dot.node(str(state.index), str(state.outputSymbol), shape="box")
+        dot.node(str(state.index), str(state.outputSymbol), shape=doubleStr+"octagon")
       else:
-        dot.node(str(state.index), str(state.outputSymbol), shape="circle")
+        dot.node(str(state.index), str(state.outputSymbol), shape=doubleStr+"circle")
     for state in self.states:
       for sym, stateConnectedTo in state.connections.items():
         dot.edge(str(state.index), str(stateConnectedTo.index), label=str(sym))

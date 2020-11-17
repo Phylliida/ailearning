@@ -116,8 +116,8 @@ class GPT(nn.Module):
 
         self.block_size = config.block_size
         self.apply(self._init_weights)
-
-        logger.info("number of parameters: %e", sum(p.numel() for p in self.parameters()))
+        if config.show_progress:
+            logger.info("number of parameters: %e", sum(p.numel() for p in self.parameters()))
 
     def get_block_size(self):
         return self.block_size

@@ -34,6 +34,7 @@ class TrainerConfig:
     ckpt_path = None
     losses_path = None
     num_workers = 0 # for DataLoader
+    show_progress=True
 
     def __init__(self, **kwargs):
         for k,v in kwargs.items():
@@ -41,15 +42,16 @@ class TrainerConfig:
 
 class Trainer:
 
-    def __init__(self, model, train_dataset, test_dataset, config, useCuda=True):
+    def __init__(self, model, train_dataset, test_dataset, config, useCuda=True, loadFromCheckpoint=True):
+        self.useCuda = useCuda
         self.model = model
         self.train_dataset = train_dataset
         self.test_dataset = test_dataset
         self.config = config
         self.losses = []
-        if config.ckpt_path is not None and os.path.isfile(config.ckpt_path):
+        if config.ckpt_path is not None and os.path.isfile(config.ckpt_path) and loadFromCheckpoint:
             self.load_checkpoint()
-        if config.losses_path is not None and os.path.isfile(config.losses_path):
+        if config.losses_path is not None and os.path.isfile(config.losses_path) and loadFromCheckpoint:
             self.load_losses()
 
         # take over whatever gpus are on the system
@@ -78,7 +80,8 @@ class Trainer:
     def save_checkpoint(self):
         # DataParallel wrappers keep raw model object in .module attribute
         raw_model = self.model.module if hasattr(self.model, "module") else self.model
-        logger.info("saving %s", self.config.ckpt_path)
+        if self.config.show_progress:
+            logger.info("saving %s", self.config.ckpt_path)
         torch.save(raw_model.state_dict(), self.config.ckpt_path)
 
     def train(self, callback=None):
@@ -90,12 +93,15 @@ class Trainer:
             is_train = split == 'train'
             model.train(is_train)
             data = self.train_dataset if is_train else self.test_dataset
-            loader = DataLoader(data, shuffle=True, pin_memory=True,
+            loader = DataLoader(data, shuffle=True, pin_memory=False,
                                 batch_size=config.batch_size,
                                 num_workers=config.num_workers)
 
             losses = []
-            pbar = tqdm(enumerate(loader), total=len(loader)) if is_train else enumerate(loader)
+            if self.config.show_progress:
+                pbar = tqdm(enumerate(loader), total=len(loader)) if is_train else enumerate(loader)
+            else:
+                pbar = enumerate(loader)
             for it, (x, y) in pbar:
 
                 # place data on the correct device
@@ -132,9 +138,9 @@ class Trainer:
                             param_group['lr'] = lr
                     else:
                         lr = config.learning_rate
-
-                    # report progress
-                    pbar.set_description(f"epoch {epoch+1} iter {it}: train loss {loss.item():.5f}. lr {lr:e}")
+                    if self.config.show_progress:
+                        # report progress
+                        pbar.set_description(f"epoch {epoch+1} iter {it}: train loss {loss.item():.5f}. lr {lr:e}")
 
             if not is_train:
                 test_loss = float(np.mean(losses))
@@ -144,16 +150,16 @@ class Trainer:
         best_loss = float('inf')
         self.tokens = 0 # counter used for learning rate decay
         for epoch in range(config.max_epochs):
-
+            
             run_epoch('train')
             if self.test_dataset is not None:
                 test_loss = run_epoch('test')
-            if not callback is None and epoch % 20 == 0:
-                callback()
+            if not callback is None:
+                callback(epoch)
             # supports early stopping based on the test loss, or just save always if no test set is provided
             good_model = self.test_dataset is None or test_loss < best_loss
             if self.config.ckpt_path is not None and good_model:
-                best_loss = test_loss
+                if self.test_dataset is not None: best_loss = test_loss
                 self.save_checkpoint()
             if self.config.losses_path is not None:
                 self.save_losses()
