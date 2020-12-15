@@ -26,25 +26,11 @@ class TransformerConfig:
             setattr(self, k, v)
 
 
-
-class HelpfulModule(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self._myHyperParams = {}
-        
-    def __setattr__(self, attr, val):
-        super().__setattr__(attr, val) # make sure to call super because torch.nn.Module also overrides this
-        simpleTypes = [int, str, float]
-        if type(val) in simpleTypes or (type(val) is list and (len(val) == 0 or type(val[0]) in simpleTypes)):
-            self._myHyperParams[attr] = val
-            
-    
-    def extra_repr(self):
-        return ", ".join([(str(param) + ": " + str(val)) for param, val in self._myHyperParams.items()])
+import pytorch_lightning as pl
     
 
 
-class SoftRELULayer(HelpfulModule):
+class SoftRELULayer(pl.LightningModule):
     def __init__(self, weightLess, offset, maxMag=4.0):
         super().__init__()
         self.weightLess = weightLess
