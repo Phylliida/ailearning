@@ -11,6 +11,7 @@ GPT model:
 
 import math
 import logging
+import os
 
 import torch
 import torch.nn as nn
@@ -21,6 +22,61 @@ import pytorch_lightning as pl
 logger = logging.getLogger(__name__)
 
 import wandb
+
+
+import random
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.nn import functional as F
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+def top_k_logits(logits, k):
+    v, ix = torch.topk(logits, k)
+    out = logits.clone()
+    out[out < v[:, [-1]]] = -float('Inf')
+    return out
+
+@torch.no_grad()
+def sample(model, x, steps, temperature=1.0, sample=False, top_k=None):
+    """
+    take a conditioning sequence of indices in x (of shape (b,t)) and predict the next token in
+    the sequence, feeding the predictions back into the model each time. Clearly the sampling
+    has quadratic complexity unlike an RNN that is only linear, and has a finite context window
+    of block_size, unlike an RNN that has an infinite context window.
+    """
+    block_size = model.get_block_size()
+    model.eval()
+    for k in range(steps):
+        x_cond = x if x.size(1) <= block_size else x[:, -block_size:] # crop context if needed
+        logits = model(x_cond)
+        # pluck the logits at the final step and scale by temperature
+        logits = logits[:, -1, :] / temperature
+        # optionally crop probabilities to only the top k options
+        if top_k is not None:
+            logits = top_k_logits(logits, top_k)
+        # apply softmax to convert to probabilities
+        probs = F.softmax(logits, dim=-1)
+        # sample from the distribution or take the most likely
+        if sample:
+            ix = torch.multinomial(probs, num_samples=1)
+        else:
+            _, ix = torch.topk(probs, k=1, dim=-1)
+        # append to the sequence and continue
+        x = torch.cat((x, ix), dim=1)
+
+    return x
+
+def sampleModel(contextString, model, data, numChars, temperature=1.0, top_k=10):
+    x = torch.tensor([data.stoi[s] for s in contextString], dtype=torch.long)[None,...].to(model.device)
+    y = sample(model, x, numChars, temperature=temperature, sample=True, top_k=top_k)[0]
+    completion = ''.join([data.itos[int(i)] for i in y])
+    return completion
 
 
 import math
@@ -211,7 +267,10 @@ class GPTConfig:
     weight_decay = 0.1 # only applied on matmul weights
     betas = (0.9, 0.95)
     learning_rate = 3e-4
-
+    print_every = 100
+    save_every = 2000
+    ckpt_path = None
+    
     def __init__(self, vocab_size, block_size, **kwargs):
         self.vocab_size = vocab_size
         self.block_size = block_size
@@ -291,7 +350,7 @@ class Block(pl.LightningModule):
 class GPT(pl.LightningModule):
     """  the full GPT language model, with a context size of block_size """
 
-    def __init__(self, config, data):
+    def __init__(self, config, data, trainer):
         super().__init__()
 
         # input embedding stem
@@ -308,11 +367,15 @@ class GPT(pl.LightningModule):
         self.apply(self._init_weights)
         
         self.config = config
-        self.data = data
+        
+        self.hparams.lr = config.learning_rate
         
         # log hyperparameters (saves to self.hparams, which is logged to wandb as the config)
         self.save_hyperparameters()
 
+        self.trainer = trainer
+        self.data = data
+        
         logger.info("number of parameters: %e", sum(p.numel() for p in self.parameters()))
 
     def get_block_size(self):
@@ -370,8 +433,10 @@ class GPT(pl.LightningModule):
             {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": self.config.weight_decay},
             {"params": [param_dict[pn] for pn in sorted(list(no_decay))], "weight_decay": 0.0},
         ]
-        optimizer = torch.optim.AdamW(optim_groups, lr=self.config.learning_rate, betas=self.config.betas)
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=self.config.learning_rate*10, steps_per_epoch=len(self.data.train_dataset), epochs=10)
+        
+        print("configure optimizers with lr" + str(self.hparams.lr))
+        optimizer = torch.optim.AdamW(optim_groups, lr=self.hparams.lr, betas=self.config.betas)
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=self.hparams.lr*10, steps_per_epoch=len(self.data.train_dataset), epochs=10)
         return [optimizer], [scheduler]
 
     def forward(self, idx, targets=None):
@@ -412,8 +477,18 @@ class GPT(pl.LightningModule):
         # logging metrics we calculated by hand
         # Here's the docs for reference https://pytorch-lightning.readthedocs.io/en/latest/lightning_module.html#log
         # this takes a name and value, and under the hood it uses wandb.log
-        self.log('train/loss', loss, on_epoch=True) # if you do on_step=False (by default this is true) then it'll only do epoch wise averaging outputs, see test_step below
+        self.log('train/loss', loss, on_epoch=False, on_step=True) # if you do on_step=False (by default this is true) then it'll only do epoch wise averaging outputs, see test_step below
     
+        if self.global_step % self.config.print_every == 0:
+            sample = sampleModel("hi\n", self, self.data, 200, temperature=1.0, top_k=10)
+            self.logger.experiment.log(
+            {"train/sample": wandb.Html(sample.replace("\n", "<br/>")),
+             "global_step": self.global_step})
+        
+        if self.config.ckpt_path is not None and self.global_step % self.config.save_every == 0:
+            os.makedirs(self.config.ckpt_path, exist_ok=True)
+            self.trainer.save_checkpoint(self.config.ckpt_path + "/" + str(self.global_step) + ".ckpt")
+        
         return loss
         
     def test_step(self, batch, batch_idx):
@@ -421,13 +496,12 @@ class GPT(pl.LightningModule):
         logits, loss = self.loss(xs, ys)
         self.log("test/loss_epoch", loss, on_step=False, on_epoch=True)
         
+        
     # save the model after we are done with testing, we will use ONNX format (https://onnx.ai/) cause it lets us use nice things like the neutron model viewer in W&B (https://github.com/lutzroeder/netron)
     def test_epoch_end(self, test_step_outputs):  # args are defined as part of pl API
-        dummy_input = torch.zeros(self.hparams["in_dims"], device=self.device)
-        model_filename = "model_final.onnx"
-        torch.onnx.export(self, dummy_input, model_filename)
-        wandb.save(model_filename)
-        
+        #wandb.save(model_filename)
+        pass
+    
     # return the logits so they can be used by validation_epoch_end
     def validation_step(self, batch, batch_idx):
         xs, ys = batch
@@ -435,14 +509,11 @@ class GPT(pl.LightningModule):
         preds = torch.argmax(logits, 1)
 
         self.log("valid/loss_epoch", loss)  # default on val/test is on_epoch only
-
+        
         return logits
     
     # example of how to log the logits as a histogram
     def validation_epoch_end(self, validation_step_outputs):
-        model_filename = f"model_{str(self.global_step).zfill(5)}.onnx" # save the model on every epoch end, so we can roll it back if needed
-        wandb.save(model_filename)
-
         flattened_logits = torch.flatten(torch.cat(validation_step_outputs))
         self.logger.experiment.log(
             {"valid/logits": wandb.Histogram(flattened_logits.to("cpu")),
