@@ -144,6 +144,9 @@ class CharDataset(Dataset):
         self.batch_size = batch_size
         self.vocab_size = len(self.stoi)
     
+    def numBatches(self):
+        return len(self)//self.batch_size
+    
     def __len__(self):
         return len(self.data) - self.block_size
 
@@ -350,7 +353,7 @@ class Block(pl.LightningModule):
 class GPT(pl.LightningModule):
     """  the full GPT language model, with a context size of block_size """
 
-    def __init__(self, config, data, trainer):
+    def __init__(self, config, data, trainer=None):
         super().__init__()
 
         # input embedding stem
@@ -436,7 +439,7 @@ class GPT(pl.LightningModule):
         
         print("configure optimizers with lr" + str(self.hparams.lr))
         optimizer = torch.optim.AdamW(optim_groups, lr=self.hparams.lr, betas=self.config.betas)
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=self.hparams.lr*10, steps_per_epoch=len(self.data.train_dataset), epochs=10)
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=self.hparams.lr*10, steps_per_epoch=self.data.train_dataset.numBatches(), epochs=10)
         return [optimizer], [scheduler]
 
     def forward(self, idx, targets=None):
@@ -487,7 +490,9 @@ class GPT(pl.LightningModule):
         
         if self.config.ckpt_path is not None and self.global_step % self.config.save_every == 0:
             os.makedirs(self.config.ckpt_path, exist_ok=True)
-            self.trainer.save_checkpoint(self.config.ckpt_path + "/" + str(self.global_step) + ".ckpt")
+            savePath = self.config.ckpt_path + "/" + str(self.global_step) + ".ckpt"
+            self.trainer.save_checkpoint(savePath)
+            wandb.save(savePath)
         
         return loss
         
