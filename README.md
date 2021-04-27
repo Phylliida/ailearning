@@ -1,1 +1,1 @@
-# openai_learning
+ai_learning
